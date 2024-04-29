@@ -1,5 +1,6 @@
-# .zip files
 *.zip
+submit/
+weights/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
