@@ -15,6 +15,7 @@ from dataset import ZipDataset
 from sklearn.model_selection import train_test_split
 from sklearn import preprocessing
 import json
+from models import BaseModel
 
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
@@ -149,7 +150,7 @@ def load_data(train_data, val_data, file_name, args):
             utils.save_on_master((dataset, trainT_ver), cache_path)
     print("Took", time.time() - st)
     
-    transform_log["train_transform"] = [str(t) for t in preprocessing.transforms]
+    transform_log["train_transform"] = [str(t) for t in preprocessing.transforms.transforms]
 
     print("Loading validation data")
     st = time.time()
@@ -165,6 +166,9 @@ def load_data(train_data, val_data, file_name, args):
             preprocessing = weights.transforms(antialias=True)
             if args.backend == "tensor":
                 preprocessing = torchvision.transforms.Compose([torchvision.transforms.PILToTensor(), preprocessing])
+                transform_log["eval_transform"] = [str(t) for t in preprocessing.transforms]
+            else :
+              transform_log["eval_transform"] = [str(preprocessing)]
 
         else:
             preprocessing = presets.ClassificationPresetEval(
@@ -173,6 +177,8 @@ def load_data(train_data, val_data, file_name, args):
                 interpolation=interpolation,
                 backend=args.backend,
             )
+
+            transform_log["eval_transform"] = [str(t) for t in preprocessing.transforms.transforms]
 
         dataset_test = ZipDataset(
             img_path_list=val_data['img_path'].values,
@@ -185,10 +191,9 @@ def load_data(train_data, val_data, file_name, args):
             utils.mkdir(os.path.dirname(cache_path))
             utils.save_on_master((dataset_test, valT_ver), cache_path)
     print("Took", time.time() - st)
-
-    transform_log["eval_transform"] = [str(t) for t in preprocessing.transforms]
     
     cache_dir = os.path.dirname(cache_path)
+    utils.mkdir(cache_dir)
     save_path = os.path.join(cache_dir, "transforms.json")
     with open(save_path, "w") as f :
         json.dump(transform_log, f, indent=2)
@@ -204,6 +209,7 @@ def main(args):
         utils.mkdir(args.output_dir)
     print(args)
 
+    # args.device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(args.device)
     
     utils.seed_everything(args.seed)
@@ -235,7 +241,7 @@ def main(args):
     )
 
     print("Creating model")
-    model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=num_classes)
+    model = BaseModel(num_classes=num_classes, args=args)
     model.to(device)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
@@ -336,7 +342,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument("--epochs", default=90, type=int, metavar="N", help="number of total epochs to run")
     parser.add_argument(
-        "-j", "--workers", default=16, type=int, metavar="N", help="number of data loading workers (default: 16)"
+        "-j", "--workers", default=0, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
     # optimizer
     parser.add_argument("--opt", default="sgd", type=str, help="optimizer")
