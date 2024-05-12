@@ -19,6 +19,8 @@ from io import BytesIO
 from transforms import get_mixup_cutmix
 from torch.utils.data.dataloader import default_collate
 
+import wandb
+
 def seed_everything(seed):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -225,6 +227,15 @@ class MetricLogger:
             if i % print_freq == 0:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+                
+                log_data = {
+                    "eta": eta_seconds,
+                    "iter_time": iter_time.value,
+                    "data_time": data_time.value,
+                }
+                for name, meter in self.meters.items():
+                    log_data[name] = meter.value
+                    
                 if torch.cuda.is_available():
                     print(
                         log_msg.format(
@@ -237,12 +248,16 @@ class MetricLogger:
                             memory=torch.cuda.max_memory_allocated() / MB,
                         )
                     )
+                    
+                    log_data["memory"] = torch.cuda.max_memory_allocated() / MB
                 else:
                     print(
                         log_msg.format(
                             i, len(iterable), eta=eta_string, meters=str(self), time=str(iter_time), data=str(data_time)
                         )
                     )
+                
+                wandb.log(log_data) 
             i += 1
             end = time.time()
         total_time = time.time() - start_time

@@ -17,6 +17,7 @@ from sklearn import preprocessing
 import json
 from models import BaseModel
 
+import wandb
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
     model.train()
@@ -59,9 +60,9 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
 
         acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
-        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+        metric_logger.update(train_loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+        metric_logger.meters["train_acc1"].update(acc1.item(), n=batch_size)
+        metric_logger.meters["train_acc5"].update(acc5.item(), n=batch_size)
         metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
 
 
@@ -80,13 +81,15 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             
             batch_size = image.shape[0]
-            metric_logger.update(loss=loss.item())
-            metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-            metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+            metric_logger.update(eval_loss=loss.item())
+            metric_logger.meters["eval_acc1"].update(acc1.item(), n=batch_size)
+            metric_logger.meters["eval_acc5"].update(acc5.item(), n=batch_size)
 
     metric_logger.synchronize_between_processes()
+    
+    wandb.log({"Acc@1": metric_logger.eval_acc1.global_avg, "Acc@5": metric_logger.eval_acc5.global_avg})
 
-    print(f"{header} Acc@1 {metric_logger.acc1.global_avg:.3f} Acc@5 {metric_logger.acc5.global_avg:.3f}")
+    print(f"{header} Acc@1 {metric_logger.eval_acc1.global_avg:.3f} Acc@5 {metric_logger.eval_acc5.global_avg:.3f}")
     return metric_logger.acc1.global_avg
 
 
@@ -208,6 +211,8 @@ def main(args):
     if args.output_dir:
         utils.mkdir(args.output_dir)
     print(args)
+    
+    wandb.init(name=args.exp, config=args)
 
     # args.device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(args.device)
@@ -298,6 +303,8 @@ def main(args):
         else:
             evaluate(model, criterion, data_loader_test, device=device)
         return
+    
+    wandb.watch(model, log_freq=args.print_freq)
 
     print("Start training")
     start_time = time.time()
@@ -333,6 +340,7 @@ def get_args_parser(add_help=True):
     parser = argparse.ArgumentParser(description="PyTorch Classification Training", add_help=add_help)
 
     parser.add_argument("--data-path", default="/datasets01/imagenet_full_size/061417/", type=str, help="dataset path")
+    parser.add_argument("--exp", default="test", type=str, help="experiment name")
     parser.add_argument("--model", default="resnet18", type=str, help="model name")
     parser.add_argument("--seed", default=42, type=int, metavar="N", help="random seed (default: 42)")
     parser.add_argument("--transform-ver", default=0, type=int, metavar="N", help="transform version (default: 0)")
