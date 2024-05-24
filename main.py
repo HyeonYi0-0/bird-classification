@@ -90,8 +90,38 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
     wandb.log({"Acc@1": metric_logger.eval_acc1.global_avg, "Acc@5": metric_logger.eval_acc5.global_avg})
 
     print(f"{header} Acc@1 {metric_logger.eval_acc1.global_avg:.3f} Acc@5 {metric_logger.eval_acc5.global_avg:.3f}")
-    return metric_logger.acc1.global_avg
+    return metric_logger.eval_acc1.global_avg
 
+def inference(model, test_loader, device):
+    model.eval()
+    preds, true_target = [], []
+    with torch.inference_mode():
+        for image, target in iter(test_loader):
+            image = image.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+
+            output = model(image)
+
+            preds += output.argmax(1).detach().cpu().numpy().tolist()
+            true_target += target.detach().cpu().numpy().tolist()
+
+    return preds, true_target
+
+def get_debug_source(le, dataset_test, preds, true_targets):
+    acc_analysis = {key: {k:0 for k in le.classes_} for key in ["correct", "incorrect_pred", "incorrect_target"]}
+    img_data = {"correct" : {}, "incorrect" : {}}
+    for i, (pred, true_target) in enumerate(zip(preds, true_targets)):
+        if pred == true_target:
+            acc_analysis["correct"][le.classes_[true_target]] += 1
+            if ((len(img_data["correct"].keys()) < 5) and (true_target not in img_data["correct"].keys())):
+                img_data["correct"][true_target] = dataset_test.data[i]
+        else :
+            acc_analysis["incorrect_pred"][le.classes_[pred]] += 1
+            acc_analysis["incorrect_target"][le.classes_[true_target]] += 1
+            if ((len(img_data["incorrect"].keys()) < 10) and ((pred, true_target) not in img_data["incorrect"].keys())):
+                img_data["incorrect"][(pred, true_target)] = dataset_test.data[i]
+                
+    return acc_analysis, img_data
 
 def _get_cache_path(filename, ver: int):
     import hashlib
@@ -151,9 +181,9 @@ def load_data(train_data, val_data, file_name, args):
             print(f"Saving dataset_train to {cache_path}")
             utils.mkdir(os.path.dirname(cache_path))
             utils.save_on_master((dataset, trainT_ver), cache_path)
+            
+        transform_log["train_transform"] = [str(t) for t in preprocessing.transforms.transforms]
     print("Took", time.time() - st)
-    
-    transform_log["train_transform"] = [str(t) for t in preprocessing.transforms.transforms]
 
     print("Loading validation data")
     st = time.time()
@@ -196,10 +226,11 @@ def load_data(train_data, val_data, file_name, args):
     print("Took", time.time() - st)
     
     cache_dir = os.path.dirname(cache_path)
-    utils.mkdir(cache_dir)
-    save_path = os.path.join(cache_dir, "transforms.json")
-    with open(save_path, "w") as f :
-        json.dump(transform_log, f, indent=2)
+    if not os.path.exists(cache_dir) :
+        utils.mkdir(cache_dir)
+        save_path = os.path.join(cache_dir, "transforms.json")
+        with open(save_path, "w") as f :
+            json.dump(transform_log, f, indent=2)
     
     print("Creating data loaders")
     train_sampler = torch.utils.data.RandomSampler(dataset)
@@ -209,7 +240,13 @@ def load_data(train_data, val_data, file_name, args):
 
 def main(args):
     if args.output_dir:
-        utils.mkdir(args.output_dir)
+        output_dir = os.path.join(args.output_dir, args.exp)
+        utils.mkdir(output_dir)
+        args.output_dir = output_dir
+        
+    resume_path = os.path.join(args.output_dir, args.resume) if args.resume != "" else None
+    args.resume = resume_path
+    
     print(args)
     
     wandb.init(name=args.exp, config=args)
@@ -246,7 +283,7 @@ def main(args):
     )
 
     print("Creating model")
-    model = BaseModel(num_classes=num_classes, args=args)
+    model = torchvision.models.efficientnet_b0(num_classes=num_classes, pretrained=False)
     model.to(device)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
@@ -283,7 +320,7 @@ def main(args):
 
     start_epoch = 0
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=True)
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model_without_ddp.load_state_dict(checkpoint["model"])
         if not args.test_only:
             optimizer.load_state_dict(checkpoint["optimizer"])
@@ -301,17 +338,27 @@ def main(args):
         if model_ema:
             evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         else:
-            evaluate(model, criterion, data_loader_test, device=device)
+            # evaluate(model, criterion, data_loader_test, device=device)
+            preds, true_targets = inference(model, data_loader_test, device=device)
+            acc_analysis, img_data = get_debug_source(le, dataset_test, preds, true_targets)
+            print(acc_analysis)
+            print(img_data)
+            utils.log_bar_plot(acc_analysis)
+            print("fin")
+            utils.log_correct_ig_results(model, le, img_data, args, device)
+            utils.log_incorrect_ig_results(model, le, img_data, args, device)
+            
         return
     
     wandb.watch(model, log_freq=args.print_freq)
 
     print("Start training")
     start_time = time.time()
+    best_score = 0
     for epoch in range(start_epoch, args.epochs):
         train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
-        lr_scheduler.step()
-        evaluate(model, criterion, data_loader_test, device=device)
+        val_score = evaluate(model, criterion, data_loader_test, device=device)
+        lr_scheduler.step(val_score)
         if model_ema:
             evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         if args.output_dir:
@@ -328,11 +375,13 @@ def main(args):
                 checkpoint["scaler"] = scaler.state_dict()
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+            if best_score < val_score:
+                best_score = val_score
+                utils.save_on_master(checkpoint, os.path.join(args.output_dir, "best_model.pth"))
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"Training time {total_time_str}")
-
 
 def get_args_parser(add_help=True):
     import argparse

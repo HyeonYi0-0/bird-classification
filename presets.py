@@ -13,7 +13,7 @@ class ClassificationPresetTrain:
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
         interpolation=InterpolationMode.BILINEAR,
-        hflip_prob=0.5,
+        hflip_prob=0.0,
         auto_augment_policy=None,
         ra_magnitude=9,
         augmix_severity=3,

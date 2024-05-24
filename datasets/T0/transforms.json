@@ -1,12 +1,15 @@
 {
   "train_transform": [
-    "RandomResizedCrop(size=(224, 224), scale=(0.08, 1.0), ratio=(0.75, 1.3333), interpolation=bilinear, antialias=True)",
-    "RandomHorizontalFlip(p=0.5)",
+    "RandomResizedCrop(size=(224, 224), scale=(0.08, 1.0), ratio=(0.75, 1.3333), interpolation=bicubic, antialias=True)",
     "PILToTensor()",
     "ConvertImageDtype()",
     "Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))"
   ],
   "eval_transform": [
-    "ImageClassification(\n    crop_size=[224]\n    resize_size=[256]\n    mean=[0.485, 0.456, 0.406]\n    std=[0.229, 0.224, 0.225]\n    interpolation=InterpolationMode.BICUBIC\n)"
+    "Resize(size=256, interpolation=bicubic, max_size=None, antialias=True)",
+    "CenterCrop(size=(224, 224))",
+    "PILToTensor()",
+    "ConvertImageDtype()",
+    "Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))"
   ]
 }

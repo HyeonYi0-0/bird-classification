@@ -18,8 +18,14 @@ from io import BytesIO
 
 from transforms import get_mixup_cutmix
 from torch.utils.data.dataloader import default_collate
+import torchvision.transforms as T
+from torchvision.transforms.functional import InterpolationMode
 
 import wandb
+import matplotlib.pyplot as plt
+import captum
+from captum.attr import IntegratedGradients
+from captum.attr import visualization as viz
 
 def seed_everything(seed):
     random.seed(seed)
@@ -81,6 +87,8 @@ def get_lr_scheduler(args, optimizer):
         )
     elif args.lr_scheduler == "exponentiallr":
         main_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
+    elif args.lr_scheduler == "plateau":
+        main_lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
     else:
         raise RuntimeError(
             f"Invalid lr scheduler '{args.lr_scheduler}'. Only StepLR, CosineAnnealingLR and ExponentialLR "
@@ -107,6 +115,125 @@ def get_lr_scheduler(args, optimizer):
         lr_scheduler = main_lr_scheduler
     return lr_scheduler
 
+def ig_transform(args, normalize=True):
+    transforms = []
+    backend = args.backend.lower()
+    if backend == "tensor":
+        transforms.append(T.PILToTensor())
+    elif backend != "pil":
+        raise ValueError(f"backend can be 'tensor' or 'pil', but got {backend}")
+
+    transforms += [
+        T.Resize(args.val_resize_size, interpolation=InterpolationMode.BICUBIC, antialias=True),
+        T.CenterCrop(args.val_crop_size),
+    ]
+
+    if backend == "pil":
+        transforms.append(T.PILToTensor())
+
+    if normalize:
+        transforms += [
+            T.ConvertImageDtype(torch.float),
+            T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ]
+
+    transform = T.Compose(transforms)
+
+    return transform
+
+def log_correct_ig_results(model, le, img_data, args, device):
+    model.eval()
+    integrated_gradients = IntegratedGradients(model)
+    columns = ["ig_result", "prediction"]
+    dt = wandb.Table(columns = columns)
+    print("inte")
+    for key, val in img_data["correct"].items() :
+        input_img = ig_transform(args, True)(val).unsqueeze(0)
+        original_img = ig_transform(args, False)(val)
+        # target_idxs.append(key)
+    
+        input_img = input_img.to(device, non_blocking=True)
+        target_idx = torch.tensor(key).to(device, non_blocking=True)
+        baseline = torch.ones(input_img.shape).to(device, non_blocking=True)
+        b_attributions_ig = integrated_gradients.attribute(input_img, target=target_idx, n_steps=100)
+        w_attributions_ig = integrated_gradients.attribute(input_img, baselines=baseline, target=target_idx, n_steps=100)
+        attr = b_attributions_ig + w_attributions_ig
+        
+        attr = np.transpose(attr.squeeze(0).cpu().detach().numpy(), (1, 2, 0))
+        original_img = np.transpose(original_img.squeeze(0).cpu().detach().numpy(), (1, 2, 0))
+        # attr = np.clip(attr, 0, 1)
+        plt, _ =  viz.visualize_image_attr_multiple(attr, 
+                                                    original_img, 
+                                                    ["original_image", "heat_map", "heat_map", "masked_image"],
+                                                    ["all", "positive", "negative", "positive"], 
+                                                    show_colorbar=True,
+                                                    titles=["Original", "Positive Attribution", "Negative Attribution", "Masked"],
+                                                    fig_size=(32, 8),
+                                                    use_pyplot=False)
+        row = [wandb.Image(plt), le.classes_[key]]
+        dt.add_data(*row)
+        
+    wandb.log({"correct_ig_result": dt}, commit=False)
+    
+def log_incorrect_ig_results(model, le, img_data, args, device):
+    model.eval()
+    integrated_gradients = IntegratedGradients(model)
+    columns = ["pred_ig_result", "prediction", "truth_ig_result", "truth"]
+    dt = wandb.Table(columns = columns)
+    
+    for key, val in img_data["incorrect"].items() :
+        input_img = ig_transform(args, True)(val).unsqueeze(0)
+        original_img = ig_transform(args, False)(val)
+        
+        input_img = input_img.to(device, non_blocking=True)
+        baseline = torch.ones(input_img.shape).to(device, non_blocking=True)
+        pred_target_idx = torch.tensor(key[0]).to(device, non_blocking=True)
+        true_target_idx = torch.tensor(key[1]).to(device, non_blocking=True)
+        b_attributions_ig = integrated_gradients.attribute(input_img, target=pred_target_idx, n_steps=100)
+        w_attributions_ig = integrated_gradients.attribute(input_img, baselines=baseline, target=pred_target_idx, n_steps=100)
+        pred_attr = b_attributions_ig + w_attributions_ig
+        
+        b_attributions_ig = integrated_gradients.attribute(input_img, target=true_target_idx, n_steps=100)
+        w_attributions_ig = integrated_gradients.attribute(input_img, baselines=baseline, target=true_target_idx, n_steps=100)
+        true_attr = b_attributions_ig + w_attributions_ig
+
+        pred_attr = np.transpose(pred_attr.squeeze(0).cpu().detach().numpy(), (1, 2, 0))
+        true_attr = np.transpose(true_attr.squeeze(0).cpu().detach().numpy(), (1, 2, 0))
+        # pred_attr = np.clip(pred_attr, 0, 1)
+        # true_attr = np.clip(true_attr, 0, 1)
+        original_img = np.transpose(original_img.squeeze(0).cpu().detach().numpy(), (1, 2, 0))
+        plt1, _ =  viz.visualize_image_attr_multiple(pred_attr, 
+                                                    original_img, 
+                                                    ["original_image", "heat_map", "heat_map", "masked_image"],
+                                                    ["all", "positive", "negative", "positive"], 
+                                                    show_colorbar=True,
+                                                    titles=["Original", "Positive Attribution", "Negative Attribution", "Masked"],
+                                                    fig_size=(32, 8),
+                                                    use_pyplot=False)
+        plt2, _ =  viz.visualize_image_attr_multiple(true_attr, 
+                                                    original_img, 
+                                                    ["original_image", "heat_map", "heat_map", "masked_image"],
+                                                    ["all", "positive", "negative", "positive"], 
+                                                    show_colorbar=True,
+                                                    titles=["Original", "Positive Attribution", "Negative Attribution", "Masked"],
+                                                    fig_size=(32, 8),
+                                                    use_pyplot=False)
+        row = [wandb.Image(plt1), le.classes_[key[0]], wandb.Image(plt2), le.classes_[key[1]]]
+        dt.add_data(*row)
+        
+    wandb.log({"incorrect_ig_result": dt})
+    
+        
+def log_bar_plot(acc_analysis):
+    correct_plt, c_ax = plt.subplots()
+    c_ax.bar(acc_analysis["correct"].keys(), acc_analysis["correct"].values(), color='b')
+    incorrect_pred_plt, ip_ax = plt.subplots()
+    ip_ax.bar(acc_analysis["incorrect_pred"].keys(), acc_analysis["incorrect_pred"].values(), color='r')
+    incorrect_traget_plt, it_ax = plt.subplots()
+    it_ax.bar(acc_analysis["incorrect_target"].keys(), acc_analysis["incorrect_target"].values(), color='g')
+    
+    wandb.log({"correct": correct_plt, "incorrect_pred": incorrect_pred_plt, "incorrect_target": incorrect_traget_plt}, commit=False)
+    
 class SmoothedValue:
     """Track a series of values and provide access to smoothed values over a
     window or the global series average.
