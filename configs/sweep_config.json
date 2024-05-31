@@ -1,0 +1,13 @@
+{
+    "method": "grid",
+    "metric": {
+        "goal": "maximize",
+        "name": "eval/acc1"
+    },
+    "parameters" : {
+        "epochs": {
+            "values": [3, 5, 7]
+        }
+    }
+
+}
