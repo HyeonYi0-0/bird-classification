@@ -1,7 +1,7 @@
 import datetime
 import os
 import time
-import warnings
+import hashlib
 
 import presets
 import torch
@@ -60,9 +60,11 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
 
         acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
-        metric_logger.update(train_loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        metric_logger.meters["train_acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["train_acc5"].update(acc5.item(), n=batch_size)
+        # metric_logger.update(train_loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.meters["train/loss"].update(loss.item())
+        metric_logger.meters["train/acc1"].update(acc1.item(), n=batch_size)
+        metric_logger.meters["train/acc5"].update(acc5.item(), n=batch_size)
         metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
 
 
@@ -81,16 +83,19 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             
             batch_size = image.shape[0]
-            metric_logger.update(eval_loss=loss.item())
-            metric_logger.meters["eval_acc1"].update(acc1.item(), n=batch_size)
-            metric_logger.meters["eval_acc5"].update(acc5.item(), n=batch_size)
+            # metric_logger.update(eval_loss=loss.item())
+            metric_logger.meters["eval/loss"].update(loss.item())
+            metric_logger.meters["eval/acc1"].update(acc1.item(), n=batch_size)
+            metric_logger.meters["eval/acc5"].update(acc5.item(), n=batch_size)
 
     metric_logger.synchronize_between_processes()
     
-    wandb.log({"Acc@1": metric_logger.eval_acc1.global_avg, "Acc@5": metric_logger.eval_acc5.global_avg})
+    # wandb.log({"Acc@1": metric_logger.eval_acc1.global_avg, "Acc@5": metric_logger.eval_acc5.global_avg})
 
-    print(f"{header} Acc@1 {metric_logger.eval_acc1.global_avg:.3f} Acc@5 {metric_logger.eval_acc5.global_avg:.3f}")
-    return metric_logger.eval_acc1.global_avg
+    acc1 = metric_logger.meters["eval/acc1"].global_avg
+    acc5 = metric_logger.meters["eval/acc5"].global_avg
+    print(f"{header} Acc@1 {acc1:.3f} Acc@5 {acc5:.3f}")
+    return metric_logger.meters["eval/acc1"].global_avg
 
 def inference(model, test_loader, device):
     model.eval()
@@ -124,7 +129,6 @@ def get_debug_source(le, dataset_test, preds, true_targets):
     return acc_analysis, img_data
 
 def _get_cache_path(filename, ver: int):
-    import hashlib
 
     root_dir = os.path.dirname(os.path.abspath(__file__))
     h = hashlib.sha1(filename.encode()).hexdigest()
@@ -244,12 +248,12 @@ def main(args):
         utils.mkdir(output_dir)
         args.output_dir = output_dir
         
-    resume_path = os.path.join(args.output_dir, args.resume) if args.resume != "" else None
-    args.resume = resume_path
+        resume_path = os.path.join(args.output_dir, args.resume) if args.resume != "" else None
+        args.resume = resume_path
     
     print(args)
     
-    wandb.init(name=args.exp, config=args)
+    wandb.init(name=args.exp, config=args, id=hashlib.sha1(args.exp.encode()).hexdigest()[:10], resume="allow")
 
     # args.device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(args.device)
@@ -350,7 +354,7 @@ def main(args):
             
         return
     
-    wandb.watch(model, log_freq=args.print_freq)
+    # wandb.watch(model, log_freq=args.print_freq)
 
     print("Start training")
     start_time = time.time()
@@ -358,7 +362,7 @@ def main(args):
     for epoch in range(start_epoch, args.epochs):
         train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
         val_score = evaluate(model, criterion, data_loader_test, device=device)
-        lr_scheduler.step(val_score)
+        lr_scheduler.step()
         if model_ema:
             evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         if args.output_dir:
@@ -373,7 +377,7 @@ def main(args):
                 checkpoint["model_ema"] = model_ema.state_dict()
             if scaler:
                 checkpoint["scaler"] = scaler.state_dict()
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
+            # utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
             if best_score < val_score:
                 best_score = val_score
@@ -445,14 +449,14 @@ def get_args_parser(add_help=True):
     parser.add_argument("--lr-scheduler", default="steplr", type=str, help="the lr scheduler (default: steplr)")
     parser.add_argument("--lr-warmup-epochs", default=0, type=int, help="the number of epochs to warmup (default: 0)")
     parser.add_argument(
-        "--lr-warmup-method", default="constant", type=str, help="the warmup method (default: constant)"
+        "--lr-warmup-method", default="linear", type=str, help="the warmup method (default: constant)"
     )
     parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
     parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
     parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
     parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
     
-    parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
+    parser.add_argument("--print-freq", default=100, type=int, help="print frequency")
     parser.add_argument("--output-dir", default=".", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument(
