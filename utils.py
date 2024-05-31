@@ -22,6 +22,7 @@ import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
 
 import wandb
+import re
 import matplotlib.pyplot as plt
 import captum
 from captum.attr import IntegratedGradients
@@ -355,13 +356,13 @@ class MetricLogger:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
                 
-                log_data = {
-                    "eta": eta_seconds,
-                    "iter_time": iter_time.value,
-                    "data_time": data_time.value,
-                }
-                for name, meter in self.meters.items():
-                    log_data[name] = meter.value
+                # log_data = {
+                #     "eta": eta_seconds,
+                #     "iter_time": iter_time.value,
+                #     "data_time": data_time.value,
+                # }
+                # for name, meter in self.meters.items():
+                #     log_data[name] = meter.value
                     
                 if torch.cuda.is_available():
                     print(
@@ -376,7 +377,7 @@ class MetricLogger:
                         )
                     )
                     
-                    log_data["memory"] = torch.cuda.max_memory_allocated() / MB
+                    # log_data["memory"] = torch.cuda.max_memory_allocated() / MB
                 else:
                     print(
                         log_msg.format(
@@ -384,9 +385,26 @@ class MetricLogger:
                         )
                     )
                 
-                wandb.log(log_data) 
+                wandb.log({"lr": self.meters["lr"].value}, step=i) 
             i += 1
             end = time.time()
+        
+        # wandb log
+        match = re.search(r"Epoch: \[(\d+)\]", header)
+        epoch_number = 0
+        if match:
+            epoch_number = int(match.group(1))
+        log_data = {
+            "iter_time": iter_time.global_avg,
+            "data_time": data_time.global_avg,
+            "epoch": epoch_number
+        }
+        for name, meter in self.meters.items():
+            log_data[name] = meter.global_avg
+        if torch.cuda.is_available():
+            log_data["memory"] = torch.cuda.max_memory_allocated() / MB
+        log_data["lr"] = self.meters["lr"].value
+        wandb.log(log_data, step=i)
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print(f"{header} Total time: {total_time_str}")
