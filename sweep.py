@@ -83,6 +83,14 @@ def main():
     lr_scheduler = utils.get_lr_scheduler(args, optimizer)
 
     model_without_ddp = model
+    
+    resume_path = None
+    if args.output_dir:
+        resume_path = os.path.join(args.output_dir, args.resume) if args.resume != "" else None
+    
+    if resume_path != None:
+        checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
+        model_without_ddp.load_state_dict(checkpoint["model"])
 
     model_ema = None
     if args.model_ema:
@@ -109,6 +117,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--seed", default=42, type=int, metavar="N", help="random seed (default: 42)")
     parser.add_argument("--transform-ver", default=0, type=int, metavar="N", help="transform version (default: 0)")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
+    parser.add_argument("--sweep-state", action="store_true", help="only use model only")
     parser.add_argument(
         "-b", "--batch-size", default=32, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
@@ -168,8 +177,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
     parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
     
-    # parser.add_argument("--output-dir", default=".", type=str, help="path to save outputs")
-    # parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--output-dir", default=".", type=str, help="path to save outputs")
+    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument(
         "--cache-dataset",
         dest="cache_dataset",
@@ -231,4 +240,4 @@ if __name__ == "__main__":
         sweep_config = json.load(f)
     
     sweep_id = wandb.sweep(sweep_config, project="bird-classification-sweeps")
-    wandb.agent(sweep_id, function=main, count=3)
+    wandb.agent(sweep_id, function=main, count=7)

@@ -154,22 +154,22 @@ def load_data(train_data, val_data, file_name, args):
     st = time.time()
     trainT_ver = "trainT{0}".format(args.transform_ver)
     cache_path = _get_cache_path(trainT_ver, args.transform_ver)
-    if args.cache_dataset and os.path.exists(cache_path):
+    if (args.cache_dataset and os.path.exists(cache_path)) and (not args.sweep_state):
         print(f"Loading dataset_train from {cache_path}")
         # TODO: this could probably be weights_only=True
         dataset, _ = torch.load(cache_path, weights_only=False)
     else:
         # We need a default value for the variables below because args may come
         # from train_quantization.py which doesn't define them.
-        auto_augment_policy = getattr(args, "auto_augment", None)
-        random_erase_prob = getattr(args, "random_erase", 0.0)
+        # auto_augment_policy = getattr(args, "auto_augment", None)
+        # random_erase_prob = getattr(args, "random_erase", 0.0)
         ra_magnitude = getattr(args, "ra_magnitude", None)
         augmix_severity = getattr(args, "augmix_severity", None)
         preprocessing = presets.ClassificationPresetTrain(
                             crop_size=train_crop_size,
                             interpolation=interpolation,
-                            auto_augment_policy=auto_augment_policy,
-                            random_erase_prob=random_erase_prob,
+                            auto_augment_policy=args.auto_augment,
+                            random_erase_prob=args.random_erase,
                             ra_magnitude=ra_magnitude,
                             augmix_severity=augmix_severity,
                             backend=args.backend,
@@ -244,12 +244,12 @@ def load_data(train_data, val_data, file_name, args):
 
 def main(args):
     if args.output_dir:
+        resume_path = os.path.join(args.output_dir, args.resume) if args.resume != "" else None
+        args.resume = resume_path
+        
         output_dir = os.path.join(args.output_dir, args.exp)
         utils.mkdir(output_dir)
         args.output_dir = output_dir
-        
-        resume_path = os.path.join(args.output_dir, args.resume) if args.resume != "" else None
-        args.resume = resume_path
     
     print(args)
     
@@ -326,10 +326,10 @@ def main(args):
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model_without_ddp.load_state_dict(checkpoint["model"])
-        if not args.test_only:
+        if not args.test_only and not args.model_only:
             optimizer.load_state_dict(checkpoint["optimizer"])
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-        start_epoch = checkpoint["epoch"] + 1
+            start_epoch = checkpoint["epoch"] + 1
         if model_ema:
             model_ema.load_state_dict(checkpoint["model_ema"])
         if scaler:
@@ -359,6 +359,7 @@ def main(args):
     print("Start training")
     start_time = time.time()
     best_score = 0
+    # stop_cnt = 0
     for epoch in range(start_epoch, args.epochs):
         train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
         val_score = evaluate(model, criterion, data_loader_test, device=device)
@@ -381,7 +382,12 @@ def main(args):
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
             if best_score < val_score:
                 best_score = val_score
+                # stop_cnt = 0
                 utils.save_on_master(checkpoint, os.path.join(args.output_dir, "best_model.pth"))
+            # else :
+            #     stop_cnt += 1
+            #     if stop_cnt > 5:
+            #         break
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -398,6 +404,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--seed", default=42, type=int, metavar="N", help="random seed (default: 42)")
     parser.add_argument("--transform-ver", default=0, type=int, metavar="N", help="transform version (default: 0)")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
+    parser.add_argument("--model-only", action="store_true", help="only use model only")
     parser.add_argument(
         "-b", "--batch-size", default=32, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )

@@ -84,7 +84,7 @@ def get_lr_scheduler(args, optimizer):
         main_lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
     elif args.lr_scheduler == "cosineannealinglr":
         main_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.epochs - args.lr_warmup_epochs, eta_min=args.lr_min
+            optimizer, T_max=2, eta_min=args.lr_min
         )
     elif args.lr_scheduler == "exponentiallr":
         main_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
@@ -294,6 +294,8 @@ class MetricLogger:
     def __init__(self, delimiter="\t"):
         self.meters = defaultdict(SmoothedValue)
         self.delimiter = delimiter
+        self.step_per_epoch = 0
+        self.epoch_number = 0
 
     def update(self, **kwargs):
         for k, v in kwargs.items():
@@ -324,6 +326,9 @@ class MetricLogger:
 
     def log_every(self, iterable, print_freq, header=None):
         i = 0
+        match = re.search(r"Epoch: \[(\d+)\]", header)
+        if match:
+            self.epoch_number = int(match.group(1))
         if not header:
             header = ""
         start_time = time.time()
@@ -348,6 +353,7 @@ class MetricLogger:
                 [header, "[{0" + space_fmt + "}/{1}]", "eta: {eta}", "{meters}", "time: {time}", "data: {data}"]
             )
         MB = 1024.0 * 1024.0
+        self.step_per_epoch = len(iterable) if self.step_per_epoch == 0 else self.step_per_epoch
         for obj in iterable:
             data_time.update(time.time() - end)
             yield obj
@@ -385,26 +391,33 @@ class MetricLogger:
                         )
                     )
                 
-                wandb.log({"lr": self.meters["lr"].value}, step=i) 
+                if "lr" in self.meters.keys() :
+                    steps = i + self.epoch_number * self.step_per_epoch
+                    wandb.log({"lr": self.meters["lr"].value}, step=steps) 
             i += 1
             end = time.time()
         
-        # wandb log
-        match = re.search(r"Epoch: \[(\d+)\]", header)
-        epoch_number = 0
-        if match:
-            epoch_number = int(match.group(1))
-        log_data = {
-            "iter_time": iter_time.global_avg,
-            "data_time": data_time.global_avg,
-            "epoch": epoch_number
-        }
-        for name, meter in self.meters.items():
-            log_data[name] = meter.global_avg
-        if torch.cuda.is_available():
-            log_data["memory"] = torch.cuda.max_memory_allocated() / MB
-        log_data["lr"] = self.meters["lr"].value
-        wandb.log(log_data, step=i)
+        # wandb logging
+        log_data = {}
+        if "lr" in self.meters.keys() :
+            log_data = {
+                "iter_time": iter_time.global_avg,
+                "data_time": data_time.global_avg,
+                "epoch": self.epoch_number
+            }
+            for name, meter in self.meters.items():
+                log_data[name] = meter.global_avg
+            if torch.cuda.is_available():
+                log_data["memory"] = torch.cuda.max_memory_allocated() / MB
+            log_data["lr"] = self.meters["lr"].value
+            i += self.epoch_number * self.step_per_epoch
+            wandb.log(log_data, step=i)
+        else :
+            print("epoch num:", self.epoch_number, "step per epoch:", self.step_per_epoch)
+            for name, meter in self.meters.items():
+                if name.startswith("eval/") :
+                    log_data[name] = meter.global_avg
+            wandb.log(log_data)
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print(f"{header} Total time: {total_time_str}")
