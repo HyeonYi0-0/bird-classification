@@ -72,6 +72,10 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"Test: {log_suffix}"
+    
+    loss_key = "eval/loss" if log_suffix == "" else f"eval/{log_suffix}_loss"
+    acc1_key = "eval/acc1" if log_suffix == "" else f"eval/{log_suffix}_acc1"
+    acc5_key = "eval/acc5" if log_suffix == "" else f"eval/{log_suffix}_acc5"
 
     with torch.inference_mode():
         for image, target in metric_logger.log_every(data_loader, print_freq, header):
@@ -84,18 +88,18 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             
             batch_size = image.shape[0]
             # metric_logger.update(eval_loss=loss.item())
-            metric_logger.meters["eval/loss"].update(loss.item())
-            metric_logger.meters["eval/acc1"].update(acc1.item(), n=batch_size)
-            metric_logger.meters["eval/acc5"].update(acc5.item(), n=batch_size)
+            metric_logger.meters[loss_key].update(loss.item())
+            metric_logger.meters[acc1_key].update(acc1.item(), n=batch_size)
+            metric_logger.meters[acc5_key].update(acc5.item(), n=batch_size)
 
     metric_logger.synchronize_between_processes()
     
     # wandb.log({"Acc@1": metric_logger.eval_acc1.global_avg, "Acc@5": metric_logger.eval_acc5.global_avg})
 
-    acc1 = metric_logger.meters["eval/acc1"].global_avg
-    acc5 = metric_logger.meters["eval/acc5"].global_avg
+    acc1 = metric_logger.meters[acc1_key].global_avg
+    acc5 = metric_logger.meters[acc5_key].global_avg
     print(f"{header} Acc@1 {acc1:.3f} Acc@5 {acc5:.3f}")
-    return metric_logger.meters["eval/acc1"].global_avg
+    return metric_logger.meters[acc1_key].global_avg
 
 def inference(model, test_loader, device):
     model.eval()
@@ -330,7 +334,7 @@ def main(args):
             optimizer.load_state_dict(checkpoint["optimizer"])
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
             start_epoch = checkpoint["epoch"] + 1
-        if model_ema:
+        if model_ema and not args.model_only:
             model_ema.load_state_dict(checkpoint["model_ema"])
         if scaler:
             scaler.load_state_dict(checkpoint["scaler"])
@@ -363,9 +367,8 @@ def main(args):
     for epoch in range(start_epoch, args.epochs):
         train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
         val_score = evaluate(model, criterion, data_loader_test, device=device)
-        lr_scheduler.step()
         if model_ema:
-            evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
+            val_score = evaluate(model_ema, criterion, data_loader_test, device=device, log_suffix="EMA")
         if args.output_dir:
             checkpoint = {
                 "model": model_without_ddp.state_dict(),
@@ -388,6 +391,7 @@ def main(args):
             #     stop_cnt += 1
             #     if stop_cnt > 5:
             #         break
+        lr_scheduler.step()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -403,6 +407,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--model", default="resnet18", type=str, help="model name")
     parser.add_argument("--seed", default=42, type=int, metavar="N", help="random seed (default: 42)")
     parser.add_argument("--transform-ver", default=0, type=int, metavar="N", help="transform version (default: 0)")
+    parser.add_argument("--sweep-state", action="store_true", help="only use model only")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument("--model-only", action="store_true", help="only use model only")
     parser.add_argument(
